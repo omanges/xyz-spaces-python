@@ -30,12 +30,13 @@ import csv
 import json
 import logging
 from functools import partial
+from multiprocessing import Manager
 from typing import Any, Dict, Generator, List, Optional, Union
 
 from geojson import Feature, GeoJSON
 
 from .apis import HubApi
-from .utils import grouper
+from .utils import divide_bbox, grouper
 
 logger = logging.getLogger(__name__)
 
@@ -650,6 +651,10 @@ class Space:
         params: Optional[dict] = None,
         selection: Optional[List[str]] = None,
         skip_cache: Optional[bool] = None,
+        divide: Optional[bool] = False,
+        cell_width: Optional[float] = None,
+        units: Optional[str] = "m",
+        chunk_size: int = 1,
     ) -> Generator[Feature, None, None]:
         """
         Search features which intersect the provided geometry.
@@ -662,11 +667,73 @@ class Space:
         :param selection: A list of strings holding properties values.
         :param skip_cache: A Boolean if set to ``True`` the response is not returned from
             cache.
+        :param divide: To divide geometry if the resultant features count is large.
+        :param cell_width: Width of each cell in which geometry is to be divided
+            in units specified, default values is meters.
+        :param units: Unit for cell_width please refer
+            https://github.com/omanges/turfpy/blob/master/measurements.md#units-type
+        :param chunk_size: Number of chunks each process to handle. The default value is
+            1, for a large number of features please use `chunk_size` greater than 1
+            to get better results in terms of performance.
         :yields: A Feature object.
         """
+        if not divide:
+            features = self.api.post_space_spatial(
+                space_id=self._info["id"],
+                data=data,
+                radius=radius,
+                tags=tags,
+                limit=limit,
+                params=params,
+                selection=selection,
+                skip_cache=skip_cache,
+            )
+            for f in features["features"]:
+                yield f
+        else:
+            divide_features = divide_bbox(
+                Feature(geometry=data), cell_width, units
+            )
+            manager = Manager()
+            feature_list: List[dict] = manager.list()
+
+            logger.info(
+                f"Total number of features after division {len(divide_features)}"
+            )
+            part_func = partial(
+                self._spatial_search_geometry,
+                feature_list=feature_list,
+                radius=radius,
+                tags=tags,
+                limit=limit,
+                params=params,
+                selection=selection,
+                skip_cache=skip_cache,
+            )
+
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                for f in executor.map(
+                    part_func, divide_features, chunksize=chunk_size
+                ):
+                    pass
+
+            for f in feature_list:
+                yield f
+
+    def _spatial_search_geometry(
+        self,
+        data: dict,
+        feature_list: List[dict],
+        radius: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        params: Optional[dict] = None,
+        selection: Optional[List[str]] = None,
+        skip_cache: Optional[bool] = None,
+    ):
         features = self.api.post_space_spatial(
             space_id=self._info["id"],
-            data=data,
+            data=data["geometry"],
             radius=radius,
             tags=tags,
             limit=limit,
@@ -674,8 +741,9 @@ class Space:
             selection=selection,
             skip_cache=skip_cache,
         )
-        for f in features["features"]:
-            yield f
+
+        if features["features"]:
+            feature_list.extend(features["features"])
 
     def add_features_geojson(
         self,

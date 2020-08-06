@@ -17,6 +17,9 @@
 
 """Module for providing test fixtures for the Hub API tests."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from xyzspaces.apis import HubApi
@@ -107,6 +110,27 @@ def shared_space():
     space = Space.new(
         title="test shared space", description="test shared space", shared=True
     )
+
+    yield space
+
+    # now teardown (delete temporary space)
+    space.delete()
+
+
+@pytest.fixture()
+def large_data_space():
+    """Create a new large data space."""
+    space = Space.new(
+        title="test large data space",
+        description="test large data space",
+        shared=True,
+    )
+    path = Path(__file__).parent.parent / "data" / "large_data.json"
+
+    with open(path) as json_file:
+        data = json.load(json_file)
+
+    space.add_features(data)
 
     yield space
 

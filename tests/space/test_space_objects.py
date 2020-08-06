@@ -573,3 +573,27 @@ def test_unshare_space(shared_space):
     del space_info["updatedAt"]
     del space_info2["updatedAt"]
     assert space_info == space_info2
+
+
+@pytest.mark.skipif(not XYZ_TOKEN, reason="No token found.")
+def test_spatial_search_geometry_divided(large_data_space):
+    feature = dict(
+        type="Feature",
+        properties={},
+        geometry={
+            "type": "Polygon",
+            "coordinates": [
+                [[-120, 60], [120, 60], [120, -60], [-120, -60], [-120, 60]],
+                [[-60, 30], [60, 30], [60, -30], [-60, -30], [-60, 30]],
+            ],
+        },
+    )
+
+    feature_read = list(
+        large_data_space.spatial_search_geometry(
+            data=feature["geometry"], divide=True, cell_width=1000000
+        )
+    )
+
+    assert len(feature_read) == 333107
+    assert feature_read[0]["type"] == "Feature"

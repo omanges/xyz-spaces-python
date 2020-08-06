@@ -22,10 +22,18 @@ Actually, they are almost unspecific to any XYZ Hub functionality, apart
 from :func:`feature_to_bbox`, but convenient to use.
 """
 
+import logging
+import math
 import os
 import warnings
 from itertools import zip_longest
-from typing import List
+from typing import List, Optional
+
+from geojson import Feature, FeatureCollection, Point, Polygon
+from turfpy.measurement import bbox, bbox_polygon, distance, length
+from turfpy.transformation import intersect
+
+logger = logging.getLogger(__name__)
 
 
 def join_string_lists(**kwargs) -> dict:
@@ -99,3 +107,89 @@ def grouper(size, iterable, fillvalue=None):
     """
     args = [iter(iterable)] * size
     return zip_longest(fillvalue=fillvalue, *args)
+
+
+def grid(bbox, cellWidth, cellHeight, units):
+    results = []
+    west = bbox[0]
+    south = bbox[1]
+    east = bbox[2]
+    north = bbox[3]
+
+    start = Feature(geometry=Point((west, south)))
+    end = Feature(geometry=Point((east, south)))
+    x_fraction = cellWidth / (distance(start, end, units))
+    cell_width_deg = x_fraction * (east - west)
+
+    start = Feature(geometry=Point((west, south)))
+    end = Feature(geometry=Point((west, north)))
+    y_fraction = cellHeight / (distance(start, end, units))
+    cell_height_deg = y_fraction * (north - south)
+
+    # rows & columns
+    bbox_width = east - west
+    bbox_height = north - south
+    columns = math.ceil(bbox_width / cell_width_deg)
+    rows = math.ceil(bbox_height / cell_height_deg)
+
+    # if the grid does not fill the bbox perfectly, center it.
+    deltaX = (bbox_width - columns * cell_width_deg) / 2
+    deltaY = (bbox_height - rows * cell_height_deg) / 2
+
+    # iterate over columns & rows
+    currentX = west + deltaX
+    for column in range(0, columns):
+        currentY = south + deltaY
+        for row in range(0, rows):
+            cellPoly = Feature(
+                geometry=Polygon(
+                    [
+                        [
+                            [currentX, currentY],
+                            [currentX, currentY + cell_height_deg],
+                            [
+                                currentX + cell_width_deg,
+                                currentY + cell_height_deg,
+                            ],
+                            [currentX + cell_width_deg, currentY],
+                            [currentX, currentY],
+                        ]
+                    ]
+                )
+            )
+            results.append(cellPoly)
+
+            currentY += cell_height_deg
+
+        currentX += cell_width_deg
+
+    return FeatureCollection(results)
+
+
+def divide_bbox(
+    feature: dict,
+    cell_width: Optional[float] = None,
+    units: Optional[str] = "m",
+):
+    bb = bbox(feature)
+    bbox_polygon_feature = bbox_polygon(bb)
+
+    if not cell_width:
+        gr = grid(
+            bb,
+            length(bbox_polygon_feature, units=units) / 4,
+            length(bbox_polygon_feature, units=units) / 4,
+            units,
+        )
+    else:
+        gr = grid(bb, cell_width, cell_width, units)
+
+    final = []
+    for f in gr["features"]:
+        try:
+            inter = intersect([f, feature])
+            if inter:
+                final.append(inter)
+        except Exception:
+            logger.debug("The intersection geometry is incorrect")
+    return final
